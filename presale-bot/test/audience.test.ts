@@ -29,6 +29,8 @@ describe("persistent Telegram audience", () => {
     first.setChainEnabled(123, "solana", true);
     first.setChainEnabled(123, "robinhood", false);
     first.markCandidateDelivered(123, "solana:mint");
+    first.setTokenUnlockTracking(123, true);
+    first.markTokenUnlockNotificationSent(123, "2026-09-18");
 
     const storedAudience = JSON.parse(readFileSync(file, "utf8")) as Array<Record<string, unknown>>;
     const storedHistory = JSON.parse(readFileSync(historyFile, "utf8")) as Array<Record<string, unknown>>;
@@ -36,7 +38,7 @@ describe("persistent Telegram audience", () => {
     expect(storedHistory[0]).toMatchObject({ chatId: 123, deliveredCandidateIds: ["solana:mint"] });
 
     const restarted = createPersistentTelegramAudience(file, [], "ONE_MINUTE_DIGEST", 0, 10_000, historyFile);
-    expect(restarted.isSubscribed(123)).toBe(true);
+    expect(restarted.isSubscribed(123)).toBe(false);
     expect(restarted.deliveryMode(123)).toBe("ONE_MINUTE_DIGEST");
     expect(restarted.digestIntervalMinutes(123)).toBe(5);
     expect(restarted.minimumMarketCapUsd(123)).toBe(25_000);
@@ -47,6 +49,10 @@ describe("persistent Telegram audience", () => {
     expect(restarted.messageFormat(123)).toBe("LIGHT");
     expect(restarted.enabledChains(123)).toEqual(["solana"]);
     expect(restarted.wasCandidateDelivered(123, "solana:mint")).toBe(true);
+    expect(restarted.isSubscribed(123)).toBe(false);
+    expect(restarted.tokenUnlockTracking(123)).toBe(true);
+    expect(restarted.tokenUnlockTrackingChatIds()).toEqual([123]);
+    expect(restarted.lastTokenUnlockNotificationDate(123)).toBe("2026-09-18");
   });
 
   it("migrates legacy audience delivery IDs and can clear them independently", () => {

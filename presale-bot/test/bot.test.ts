@@ -6,6 +6,7 @@ import { createBotState } from "../src/bot/state.js";
 import { createTelegramAudience } from "../src/bot/services.js";
 import type { AppConfig } from "../src/config.js";
 import type { TokenCandidate } from "../src/domain/token-candidate.js";
+import type { BinanceAlphaUnlockService } from "../src/features/binance-alpha-unlocks.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -44,14 +45,18 @@ function setup(
   testConfig: AppConfig = config,
   holderRefresher?: { refresh(candidate: TokenCandidate): Promise<TokenCandidate> },
   audienceOverride?: ReturnType<typeof createTelegramAudience>,
+  unlockService?: BinanceAlphaUnlockService,
+  now?: () => Date,
 ) {
   const state = createBotState();
-  const { bot, notifier, configureUi, flushDigests } = createTelegramBot({
+  const { bot, notifier, configureUi, flushDigests, checkTokenUnlockNotifications } = createTelegramBot({
     config: testConfig,
     state,
     logger: pino({ level: "silent" }),
     ...(holderRefresher ? { holderRefresher } : {}),
     ...(audienceOverride ? { audience: audienceOverride } : {}),
+    ...(unlockService ? { unlockService } : {}),
+    ...(now ? { now } : {}),
   });
   bot.botInfo = {
     id: 123456,
@@ -88,7 +93,7 @@ function setup(
           : true,
     } as never;
   });
-  return { bot, notifier, configureUi, flushDigests, sent, apiCalls };
+  return { bot, notifier, configureUi, flushDigests, checkTokenUnlockNotifications, sent, apiCalls };
 }
 
 function callbackUpdate(userId: number, data: string, updateId: number): Update {
@@ -124,6 +129,18 @@ function commandUpdate(userId: number, command: string, updateId: number): Updat
 }
 
 describe("Telegram commands", () => {
+  const alphaUnlock = {
+    id: "ALPHA_1:1789689600000",
+    name: "Alpha Project",
+    symbol: "ALP",
+    unlockAt: new Date("2026-09-18T00:00:00Z"),
+    unlockTokens: 100_000,
+    unlockPercentOfSupply: 10,
+    lockedPercent: 65,
+    unlockedPercent: 35,
+    binanceUrl: "https://web3.binance.info/en/token/bsc/0xabc",
+  };
+
   it("parses manual market-cap amounts", () => {
     expect(parseMarketCapInput("10000")).toBe(10_000);
     expect(parseMarketCapInput("$25,000")).toBe(25_000);
@@ -145,6 +162,60 @@ describe("Telegram commands", () => {
     const { bot, sent } = setup();
     await bot.handleUpdate(commandUpdate(999, "/status", 2));
     expect(sent[0]).toContain("Bot status");
+  });
+
+  it("opens Other features and the Binance Alpha unlock local menu", async () => {
+    const { bot, apiCalls } = setup();
+    await bot.handleUpdate(callbackUpdate(123, "menu:other_features", 60));
+    await bot.handleUpdate(callbackUpdate(123, "unlocks:menu", 61));
+
+    const edits = apiCalls.filter((call) => call.method === "editMessageText");
+    expect(edits.at(-2)?.payload.text).toContain("Other features");
+    expect(edits.at(-1)?.payload.text).toContain("Binance Alpha Token Unlocks");
+    const buttons = (edits.at(-1)?.payload as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } })
+      .reply_markup?.inline_keyboard?.flat().map((button) => button.text);
+    expect(buttons).toContain("🏆 Top 10 Token Unlocks");
+    expect(buttons).toContain("🔔 Token Unlocks Tracking");
+    expect(buttons).toContain("🔕 Turn Off Token Unlocks Tracking");
+  });
+
+  it("enables unlock tracking, shows the top ten, and turns discovery tracking off", async () => {
+    const audience = createTelegramAudience([123], "IMMEDIATE", 0, 10_000, ["solana"]);
+    const unlockService: BinanceAlphaUnlockService = { listUnlocks: async () => [alphaUnlock] };
+    const { bot, apiCalls } = setup(config, undefined, audience, unlockService, () => new Date("2026-09-17T09:00:00Z"));
+
+    await bot.handleUpdate(callbackUpdate(123, "unlocks:tracking:on", 62));
+
+    expect(audience.tokenUnlockTracking(123)).toBe(true);
+    expect(audience.isSubscribed(123)).toBe(false);
+    const unlockMessage = apiCalls.findLast((call) => call.method === "editMessageText");
+    expect(unlockMessage?.payload.text).toContain("Alpha Project");
+    const unlockPayload = unlockMessage?.payload as { link_preview_options?: unknown } | undefined;
+    expect(unlockPayload?.link_preview_options).toEqual({ is_disabled: true });
+
+    await bot.handleUpdate(callbackUpdate(123, "unlocks:tracking:off", 63));
+    expect(audience.tokenUnlockTracking(123)).toBe(false);
+  });
+
+  it("sends one day-before unlock notification only once", async () => {
+    const audience = createTelegramAudience([], "IMMEDIATE", 0, 10_000, ["solana"]);
+    audience.setTokenUnlockTracking(999, true);
+    const unlockService: BinanceAlphaUnlockService = { listUnlocks: async () => [alphaUnlock] };
+    const { checkTokenUnlockNotifications, sent } = setup(
+      config,
+      undefined,
+      audience,
+      unlockService,
+      () => new Date("2026-09-17T09:00:00Z"),
+    );
+
+    await checkTokenUnlockNotifications();
+    await checkTokenUnlockNotifications();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Token Unlocks Tomorrow");
+    expect(sent[0]).toContain("Alpha Project");
+    expect(audience.lastTokenUnlockNotificationDate(999)).toBe("2026-09-18");
   });
 
   it("allows every chat to manage its own discovery chains", async () => {
@@ -234,9 +305,10 @@ describe("Telegram commands", () => {
     const send = apiCalls.find((call) => call.method === "sendMessage");
     const payload = send?.payload as { reply_markup?: { inline_keyboard?: unknown[][] } } | undefined;
     const buttons = payload?.reply_markup?.inline_keyboard?.flat() as Array<{ text?: string }> | undefined;
-    expect(buttons).toHaveLength(10);
+    expect(buttons).toHaveLength(11);
     expect(buttons?.some((button) => button.text === "🧑 Enable Creator History ❌")).toBe(true);
     expect(buttons?.some((button) => button.text === "📝 Message format: LIGHT")).toBe(true);
+    expect(buttons?.some((button) => button.text === "🧰 Other features")).toBe(true);
     expect(buttons?.some((button) => button.text === "⛓ Chains")).toBe(true);
   });
 

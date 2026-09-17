@@ -89,6 +89,7 @@ export class EvmDexDetector implements ChainDetector {
     eventBus: EventBus;
     logger: Logger;
     nativeUsdPrice?: NativeUsdPriceService;
+    isDiscoveryEnabled?: () => boolean;
   }) {}
 
   status(): EvmDetectorStatus {
@@ -173,6 +174,7 @@ export class EvmDexDetector implements ChainDetector {
   }
 
   private async processLogs(factory: DexFactoryConfig, logs: readonly FactoryLog[]): Promise<void> {
+    if (this.dependencies.isDiscoveryEnabled?.() === false) return;
     for (const log of logs) {
       const token0 = log.args?.token0 ?? log.args?.currency0;
       const token1 = log.args?.token1 ?? log.args?.currency1;
@@ -189,6 +191,7 @@ export class EvmDexDetector implements ChainDetector {
         const candidate = await this.normalizePool(factory, token0, token1, pool, log);
         this.rememberCompleted(eventId);
         if (!candidate) continue;
+        if (this.dependencies.isDiscoveryEnabled?.() === false) continue;
         await this.dependencies.eventBus.emit({ type: "PoolCreated", candidate });
         this.lastEventAt = candidate.discoveredAt;
         this.dependencies.logger.info({

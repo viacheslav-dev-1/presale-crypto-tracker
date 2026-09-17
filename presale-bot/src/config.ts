@@ -38,6 +38,8 @@ const EnvSchema = z
     TELEGRAM_DELIVERY_HISTORY_FILE: z.string().min(1).default(".data/telegram-delivery-history.json"),
     CREATOR_HISTORY_FILE: z.string().min(1).default(".data/creator-history.json"),
     CREATOR_MEANINGFUL_LIQUIDITY_USD: z.coerce.number().finite().min(0).default(25_000),
+    CRYPTORANK_API_KEY: z.string().min(1).optional().or(z.literal("")),
+    TOKEN_UNLOCK_PROVIDER: z.enum(["coinmarketcap", "cryptorank"]).default("coinmarketcap"),
     DEFAULT_DELIVERY_MODE: z.enum(["IMMEDIATE", "ONE_MINUTE_DIGEST"]).default("ONE_MINUTE_DIGEST"),
     IMMEDIATE_MESSAGE_INTERVAL_MS: z.coerce.number().int().min(0).max(60_000).default(2_000),
     MAX_CANDIDATE_AGE_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(600_000),
@@ -101,6 +103,8 @@ export interface AppConfig {
   telegramDeliveryHistoryFile: string;
   creatorHistoryFile: string;
   creatorMeaningfulLiquidityUsd: number;
+  cryptoRankApiKey?: string;
+  tokenUnlockProvider?: "coinmarketcap" | "cryptorank";
   defaultDeliveryMode: "IMMEDIATE" | "ONE_MINUTE_DIGEST";
   immediateMessageIntervalMs: number;
   maxCandidateAgeMs: number;
@@ -137,6 +141,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     telegramDeliveryHistoryFile: env.TELEGRAM_DELIVERY_HISTORY_FILE,
     creatorHistoryFile: env.CREATOR_HISTORY_FILE,
     creatorMeaningfulLiquidityUsd: env.CREATOR_MEANINGFUL_LIQUIDITY_USD,
+    ...(env.CRYPTORANK_API_KEY ? { cryptoRankApiKey: env.CRYPTORANK_API_KEY } : {}),
+    tokenUnlockProvider: env.TOKEN_UNLOCK_PROVIDER,
     defaultDeliveryMode: env.DEFAULT_DELIVERY_MODE,
     immediateMessageIntervalMs: env.IMMEDIATE_MESSAGE_INTERVAL_MS,
     maxCandidateAgeMs: env.MAX_CANDIDATE_AGE_MS,

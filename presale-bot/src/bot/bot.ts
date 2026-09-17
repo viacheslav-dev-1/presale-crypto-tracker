@@ -11,6 +11,9 @@ import {
   lightDigestKeyboard,
   mainMenuKeyboard,
   marketCapKeyboard,
+  otherFeaturesKeyboard,
+  tokenUnlockMonthKeyboard,
+  tokenUnlocksKeyboard,
 } from "./keyboards.js";
 import {
   basicHealthService,
@@ -25,6 +28,14 @@ import {
   type TelegramAudience,
 } from "./services.js";
 import type { BotState } from "./state.js";
+import {
+  createBinanceAlphaUnlockService,
+  formatBinanceAlphaUnlocks,
+  TokenUnlockConfigurationError,
+  utcDayRange,
+  utcMonthRange,
+  type BinanceAlphaUnlockService,
+} from "../features/binance-alpha-unlocks.js";
 
 const HELP = [
   "<b>Available commands</b>",
@@ -66,6 +77,9 @@ export interface TelegramBotDependencies {
   digestIntervalMs?: number;
   holderRefresher?: { refresh(candidate: TokenCandidate): Promise<TokenCandidate> };
   candidateView?: (candidate: TokenCandidate, chatId: number) => TokenCandidate;
+  unlockService?: BinanceAlphaUnlockService;
+  now?: () => Date;
+  tokenUnlockCheckIntervalMs?: number;
 }
 
 export interface TelegramNotifier {
@@ -79,6 +93,7 @@ export interface TelegramBotRuntime {
   notifier: TelegramNotifier;
   configureUi(): Promise<void>;
   flushDigests(): Promise<void>;
+  checkTokenUnlockNotifications(): Promise<void>;
   stopUi(): void;
 }
 
@@ -106,7 +121,11 @@ function missingMarketCapNotice(count: number): string {
   ].join("\n");
 }
 
-async function editOrReply(ctx: Context, text: string, options?: { reply_markup: InlineKeyboard }): Promise<void> {
+async function editOrReply(
+  ctx: Context,
+  text: string,
+  options?: { reply_markup: InlineKeyboard; link_preview_options?: { is_disabled: true } },
+): Promise<void> {
   if (ctx.callbackQuery?.message) {
     await ctx.editMessageText(text, { parse_mode: "HTML", ...options }).catch(async (error: unknown) => {
       if (error instanceof GrammyError && error.description.includes("message is not modified")) return;
@@ -131,6 +150,11 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
   const digestQueue = dependencies.digestQueue ?? createCandidateDigestQueue();
   const holderRefresher = dependencies.holderRefresher;
   const candidateView = dependencies.candidateView ?? ((candidate: TokenCandidate) => candidate);
+  const unlockService = dependencies.unlockService ?? createBinanceAlphaUnlockService({
+    ...(config.cryptoRankApiKey ? { cryptoRankApiKey: config.cryptoRankApiKey } : {}),
+    provider: config.tokenUnlockProvider ?? "coinmarketcap",
+  });
+  const now = dependencies.now ?? (() => new Date());
   const digestIntervalMs = dependencies.digestIntervalMs ?? 60_000;
   const bot = new Bot(config.telegramToken);
   const immediateDeliveryChains = new Map<number, Promise<void>>();
@@ -170,6 +194,20 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
   const removeQueuedChain = (chatId: number, chain: Chain) => {
     const retained = digestQueue.drain(chatId).filter((candidate) => candidate.chain !== chain);
     retained.forEach((candidate) => digestQueue.enqueue(chatId, candidate));
+  };
+  const stopDiscoveryTracking = (chatId: number) => {
+    digestQueue.drain(chatId);
+    digestPeriodsStartedAt.delete(chatId);
+    missingMarketCapCounts.delete(chatId);
+    lastMissingMarketCapNoticeAt.delete(chatId);
+    filterStats.delete(chatId);
+  };
+  const logUnlockFailure = (error: unknown, message: string) => {
+    if (error instanceof TokenUnlockConfigurationError) {
+      logger.warn({ reason: error.message }, message);
+    } else {
+      logger.warn({ err: error }, message);
+    }
   };
 
   const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -230,6 +268,7 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
   bot.command("stop", async (ctx) => {
     audience.clearCandidateDeliveryHistory(ctx.chat.id);
     audience.unsubscribe(ctx.chat.id);
+    audience.setTokenUnlockTracking(ctx.chat.id, false);
     digestQueue.drain(ctx.chat.id);
     digestPeriodsStartedAt.delete(ctx.chat.id);
     missingMarketCapCounts.delete(ctx.chat.id);
@@ -303,6 +342,80 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
     await ctx.answerCallbackQuery();
     await editOrReply(ctx, marketCapScreen(ctx.chat.id), {
       reply_markup: marketCapKeyboard(audience.trackTokensWithoutMarketCap(ctx.chat.id)),
+    });
+  });
+  bot.callbackQuery("menu:other_features", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await editOrReply(ctx, "<b>Other features</b>\n\nChoose a feature:", {
+      reply_markup: otherFeaturesKeyboard(),
+    });
+  });
+  bot.callbackQuery("unlocks:menu", async (ctx) => {
+    if (!ctx.chat) return ctx.answerCallbackQuery({ text: "Chat is unavailable", show_alert: true });
+    await ctx.answerCallbackQuery();
+    const tracking = audience.tokenUnlockTracking(ctx.chat.id);
+    await editOrReply(ctx, [
+      "<b>Binance Alpha Token Unlocks</b>",
+      "",
+      `Tracking: <b>${tracking ? "ON ✅" : "OFF ❌"}</b>`,
+      "Unlocks are ordered by date and time, then by unlock percentage for matching timestamps.",
+    ].join("\n"), { reply_markup: tokenUnlocksKeyboard(tracking) });
+  });
+  bot.callbackQuery(/^unlocks:month:(0|1)$/, async (ctx) => {
+    if (!ctx.chat) return ctx.answerCallbackQuery({ text: "Chat is unavailable", show_alert: true });
+    const offset = Number(ctx.match[1]) as 0 | 1;
+    await ctx.answerCallbackQuery({ text: "Loading Binance Alpha unlocks…" });
+    const current = now();
+    const range = utcMonthRange(current, offset);
+    try {
+      const unlocks = await unlockService.listUnlocks(range.from, range.to);
+      const month = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+        .format(range.from);
+      await editOrReply(ctx, formatBinanceAlphaUnlocks(unlocks, `Top 10 Binance Alpha Token Unlocks — ${month}`), {
+        link_preview_options: { is_disabled: true },
+        reply_markup: tokenUnlockMonthKeyboard(current, offset, audience.tokenUnlockTracking(ctx.chat.id)),
+      });
+    } catch (error) {
+      logUnlockFailure(error, "Binance Alpha unlock list unavailable");
+      const message = error instanceof TokenUnlockConfigurationError
+        ? error.message
+        : "Token unlock data is temporarily unavailable. Please try again shortly.";
+      await editOrReply(ctx, `⚠️ ${message}`, {
+        reply_markup: tokenUnlocksKeyboard(audience.tokenUnlockTracking(ctx.chat.id)),
+      });
+    }
+  });
+  bot.callbackQuery("unlocks:tracking:on", async (ctx) => {
+    if (!ctx.chat) return ctx.answerCallbackQuery({ text: "Chat is unavailable", show_alert: true });
+    const current = now();
+    const range = utcMonthRange(current, 0);
+    await ctx.answerCallbackQuery({ text: "Loading Binance Alpha unlocks…" });
+    try {
+      const unlocks = await unlockService.listUnlocks(range.from, range.to);
+      audience.setTokenUnlockTracking(ctx.chat.id, true);
+      stopDiscoveryTracking(ctx.chat.id);
+      const month = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+        .format(range.from);
+      await editOrReply(ctx, formatBinanceAlphaUnlocks(unlocks, `Token Unlocks Tracking ON — ${month}`), {
+        link_preview_options: { is_disabled: true },
+        reply_markup: tokenUnlockMonthKeyboard(current, 0, true),
+      });
+    } catch (error) {
+      logUnlockFailure(error, "Binance Alpha unlock tracking could not be enabled");
+      const message = error instanceof TokenUnlockConfigurationError
+        ? error.message
+        : "Token unlock data is temporarily unavailable. Tracking was not enabled.";
+      await editOrReply(ctx, `⚠️ ${message}`, {
+        reply_markup: tokenUnlocksKeyboard(audience.tokenUnlockTracking(ctx.chat.id)),
+      });
+    }
+  });
+  bot.callbackQuery("unlocks:tracking:off", async (ctx) => {
+    if (!ctx.chat) return ctx.answerCallbackQuery({ text: "Chat is unavailable", show_alert: true });
+    audience.setTokenUnlockTracking(ctx.chat.id, false);
+    await ctx.answerCallbackQuery({ text: "Token unlock tracking turned off" });
+    await editOrReply(ctx, "<b>Binance Alpha Token Unlocks</b>\n\nTracking: <b>OFF ❌</b>", {
+      reply_markup: tokenUnlocksKeyboard(false),
     });
   });
   bot.callbackQuery(/^marketcap:set:(min|max)$/, async (ctx) => {
@@ -599,6 +712,49 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
   }, digestIntervalMs);
   digestTimer.unref();
 
+  let unlockNotificationCache: { date: string; unlocks: Awaited<ReturnType<BinanceAlphaUnlockService["listUnlocks"]>> } | undefined;
+  const checkTokenUnlockNotifications = async (): Promise<void> => {
+    const recipients = audience.tokenUnlockTrackingChatIds();
+    if (recipients.length === 0) return;
+    const current = now();
+    const range = utcDayRange(current, 1);
+    const notificationDate = range.from.toISOString().slice(0, 10);
+    const dueRecipients = recipients.filter(
+      (chatId) => audience.lastTokenUnlockNotificationDate(chatId) !== notificationDate,
+    );
+    if (dueRecipients.length === 0) return;
+    let unlocks = unlockNotificationCache?.date === notificationDate
+      ? unlockNotificationCache.unlocks
+      : undefined;
+    if (!unlocks) {
+      try {
+        unlocks = await unlockService.listUnlocks(range.from, range.to);
+        unlockNotificationCache = { date: notificationDate, unlocks };
+      } catch (error) {
+        logUnlockFailure(error, "Binance Alpha unlock notification check failed");
+        return;
+      }
+    }
+    if (unlocks.length === 0) return;
+    const text = formatBinanceAlphaUnlocks(unlocks, "🔔 Binance Alpha Token Unlocks Tomorrow");
+    await Promise.all(dueRecipients.map(async (chatId) => {
+      try {
+        await bot.api.sendMessage(chatId, text, {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_markup: tokenUnlocksKeyboard(true),
+        });
+        audience.markTokenUnlockNotificationSent(chatId, notificationDate);
+      } catch (error) {
+        logger.error({ err: error, chatId }, "Token unlock notification failed");
+      }
+    }));
+  };
+  const unlockTimer = setInterval(() => {
+    void checkTokenUnlockNotifications();
+  }, dependencies.tokenUnlockCheckIntervalMs ?? 15 * 60_000);
+  unlockTimer.unref();
+
   const routeCandidate = async (candidate: TokenCandidate): Promise<void> => {
     const immediateText = (chatId: number) => {
       const view = candidateView(candidate, chatId);
@@ -676,10 +832,13 @@ export function createTelegramBot(dependencies: TelegramBotDependencies): Telegr
         bot.api.setMyCommands([...TELEGRAM_COMMANDS]),
         bot.api.setChatMenuButton({ menu_button: { type: "commands" } }),
       ]);
+      void checkTokenUnlockNotifications();
     },
     flushDigests,
+    checkTokenUnlockNotifications,
     stopUi() {
       clearInterval(digestTimer);
+      clearInterval(unlockTimer);
     },
     notifier: {
       async candidateDetected(candidate) {

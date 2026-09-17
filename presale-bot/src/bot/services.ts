@@ -46,7 +46,13 @@ export interface TelegramAudience {
   markCandidateDelivered(chatId: number, candidateId: string): void;
   clearCandidateDeliveryHistory(chatId: number): void;
   deliveredCandidateIds(chatId: number): readonly string[];
+  tokenUnlockTracking(chatId: number): boolean;
+  setTokenUnlockTracking(chatId: number, enabled: boolean): void;
+  tokenUnlockTrackingChatIds(): readonly number[];
+  lastTokenUnlockNotificationDate(chatId: number): string | undefined;
+  markTokenUnlockNotificationSent(chatId: number, date: string): void;
   chatIds(): readonly number[];
+  allChatIds(): readonly number[];
 }
 
 export type DeliveryMode = "IMMEDIATE" | "ONE_MINUTE_DIGEST";
@@ -62,6 +68,7 @@ export function createTelegramAudience(
   defaultEnabledChains: readonly Chain[] = ["robinhood"],
 ): TelegramAudience {
   const subscribers = new Set(initialChatIds);
+  const knownChatIds = new Set(initialChatIds);
   const deliveryModes = new Map<number, DeliveryMode>();
   const digestIntervals = new Map<number, DigestIntervalMinutes>();
   const minimumMarketCaps = new Map<number, number>();
@@ -72,11 +79,19 @@ export function createTelegramAudience(
   const messageFormats = new Map<number, MessageFormat>();
   const enabledChainsByChat = new Map<number, Set<Chain>>();
   const deliveredCandidates = new Map<number, Set<string>>();
+  const tokenUnlockSubscribers = new Set<number>();
+  const tokenUnlockNotificationDates = new Map<number, string>();
+  const activateDiscovery = (chatId: number) => {
+    knownChatIds.add(chatId);
+    subscribers.add(chatId);
+    tokenUnlockSubscribers.delete(chatId);
+  };
   return {
     subscribe(chatId) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
     },
     unsubscribe(chatId) {
+      knownChatIds.add(chatId);
       subscribers.delete(chatId);
     },
     isSubscribed(chatId) {
@@ -86,56 +101,56 @@ export function createTelegramAudience(
       return deliveryModes.get(chatId) ?? defaultDeliveryMode;
     },
     setDeliveryMode(chatId, mode) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       deliveryModes.set(chatId, mode);
     },
     digestIntervalMinutes(chatId) {
       return digestIntervals.get(chatId) ?? 1;
     },
     setDigestIntervalMinutes(chatId, minutes) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       digestIntervals.set(chatId, minutes);
     },
     minimumMarketCapUsd(chatId) {
       return minimumMarketCaps.get(chatId) ?? defaultMinimumMarketCapUsd;
     },
     setMinimumMarketCapUsd(chatId, value) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       minimumMarketCaps.set(chatId, value);
     },
     maximumMarketCapUsd(chatId) {
       return maximumMarketCaps.get(chatId) ?? defaultMaximumMarketCapUsd;
     },
     setMaximumMarketCapUsd(chatId, value) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       maximumMarketCaps.set(chatId, value);
     },
     trackTokensWithoutMarketCap(chatId) {
       return trackWithoutMarketCap.get(chatId) ?? false;
     },
     setTrackTokensWithoutMarketCap(chatId, enabled) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       trackWithoutMarketCap.set(chatId, enabled);
     },
     showHolders(chatId) {
       return holderVisibility.get(chatId) ?? true;
     },
     setShowHolders(chatId, enabled) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       holderVisibility.set(chatId, enabled);
     },
     showCreatorHistory(chatId) {
       return creatorHistoryVisibility.get(chatId) ?? false;
     },
     setShowCreatorHistory(chatId, enabled) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       creatorHistoryVisibility.set(chatId, enabled);
     },
     messageFormat(chatId) {
       return messageFormats.get(chatId) ?? "LIGHT";
     },
     setMessageFormat(chatId, format) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       messageFormats.set(chatId, format);
     },
     enabledChains(chatId) {
@@ -143,7 +158,7 @@ export function createTelegramAudience(
       return CHAINS.filter((chain) => enabled.has(chain));
     },
     setChainEnabled(chatId, chain, enabled) {
-      subscribers.add(chatId);
+      activateDiscovery(chatId);
       const chains = enabledChainsByChat.get(chatId) ?? new Set(defaultEnabledChains);
       if (enabled) chains.add(chain);
       else chains.delete(chain);
@@ -169,14 +184,40 @@ export function createTelegramAudience(
     deliveredCandidateIds(chatId) {
       return [...(deliveredCandidates.get(chatId) ?? [])];
     },
+    tokenUnlockTracking(chatId) {
+      return tokenUnlockSubscribers.has(chatId);
+    },
+    setTokenUnlockTracking(chatId, enabled) {
+      knownChatIds.add(chatId);
+      if (enabled) {
+        tokenUnlockSubscribers.add(chatId);
+        subscribers.delete(chatId);
+      } else {
+        tokenUnlockSubscribers.delete(chatId);
+      }
+    },
+    tokenUnlockTrackingChatIds() {
+      return [...tokenUnlockSubscribers];
+    },
+    lastTokenUnlockNotificationDate(chatId) {
+      return tokenUnlockNotificationDates.get(chatId);
+    },
+    markTokenUnlockNotificationSent(chatId, date) {
+      knownChatIds.add(chatId);
+      tokenUnlockNotificationDates.set(chatId, date);
+    },
     chatIds() {
       return [...subscribers];
+    },
+    allChatIds() {
+      return [...knownChatIds];
     },
   };
 }
 
 interface StoredAudienceEntry {
   chatId: number;
+  subscribed?: boolean;
   deliveryMode: DeliveryMode;
   digestIntervalMinutes?: DigestIntervalMinutes;
   minimumMarketCapUsd?: number;
@@ -188,6 +229,8 @@ interface StoredAudienceEntry {
   messageFormatSchemaVersion?: 2;
   enabledChains?: Chain[];
   deliveredCandidateIds?: string[];
+  tokenUnlockTracking?: boolean;
+  lastTokenUnlockNotificationDate?: string;
 }
 
 interface StoredDeliveryHistoryEntry {
@@ -204,6 +247,7 @@ function readStoredAudience(filePath: string): StoredAudienceEntry[] {
       if (typeof entry !== "object" || entry === null) return false;
       const record = entry as Record<string, unknown>;
       return Number.isSafeInteger(record.chatId) &&
+        (record.subscribed === undefined || typeof record.subscribed === "boolean") &&
         (record.deliveryMode === "IMMEDIATE" || record.deliveryMode === "ONE_MINUTE_DIGEST") &&
         (record.digestIntervalMinutes === undefined ||
           DIGEST_INTERVAL_MINUTES.includes(record.digestIntervalMinutes as DigestIntervalMinutes)) &&
@@ -220,7 +264,10 @@ function readStoredAudience(filePath: string): StoredAudienceEntry[] {
           (Array.isArray(record.enabledChains) && record.enabledChains.every((chain) =>
             typeof chain === "string" && (CHAINS as readonly string[]).includes(chain)))) &&
         (record.deliveredCandidateIds === undefined ||
-          (Array.isArray(record.deliveredCandidateIds) && record.deliveredCandidateIds.every((id) => typeof id === "string")));
+          (Array.isArray(record.deliveredCandidateIds) && record.deliveredCandidateIds.every((id) => typeof id === "string"))) &&
+        (record.tokenUnlockTracking === undefined || typeof record.tokenUnlockTracking === "boolean") &&
+        (record.lastTokenUnlockNotificationDate === undefined ||
+          (typeof record.lastTokenUnlockNotificationDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(record.lastTokenUnlockNotificationDate)));
     });
   } catch {
     return [];
@@ -274,6 +321,7 @@ export function createPersistentTelegramAudience(
   const legacyDeliveredCandidates = new Map<number, string[]>();
   stored.forEach(({
     chatId,
+    subscribed,
     deliveryMode,
     digestIntervalMinutes,
     minimumMarketCapUsd,
@@ -285,6 +333,8 @@ export function createPersistentTelegramAudience(
     messageFormatSchemaVersion,
     enabledChains,
     deliveredCandidateIds,
+    tokenUnlockTracking,
+    lastTokenUnlockNotificationDate,
   }) => {
     audience.setDeliveryMode(chatId, deliveryMode);
     if (digestIntervalMinutes !== undefined) audience.setDigestIntervalMinutes(chatId, digestIntervalMinutes);
@@ -308,6 +358,11 @@ export function createPersistentTelegramAudience(
       for (const chain of CHAINS) audience.setChainEnabled(chatId, chain, enabledChains.includes(chain));
     }
     if (deliveredCandidateIds?.length) legacyDeliveredCandidates.set(chatId, deliveredCandidateIds);
+    if (tokenUnlockTracking !== undefined) audience.setTokenUnlockTracking(chatId, tokenUnlockTracking);
+    if (lastTokenUnlockNotificationDate !== undefined) {
+      audience.markTokenUnlockNotificationSent(chatId, lastTokenUnlockNotificationDate);
+    }
+    if (subscribed === false) audience.unsubscribe(chatId);
   });
 
   const separateHistoryChatIds = new Set(storedDeliveryHistory.map((entry) => entry.chatId));
@@ -320,8 +375,9 @@ export function createPersistentTelegramAudience(
   });
 
   const persistAudience = () => {
-    const data = audience.chatIds().map((chatId) => ({
+    const data = audience.allChatIds().map((chatId) => ({
       chatId,
+      subscribed: audience.isSubscribed(chatId),
       deliveryMode: audience.deliveryMode(chatId),
       digestIntervalMinutes: audience.digestIntervalMinutes(chatId),
       minimumMarketCapUsd: audience.minimumMarketCapUsd(chatId),
@@ -332,6 +388,8 @@ export function createPersistentTelegramAudience(
       messageFormat: audience.messageFormat(chatId),
       messageFormatSchemaVersion: 2 as const,
       enabledChains: audience.enabledChains(chatId),
+      tokenUnlockTracking: audience.tokenUnlockTracking(chatId),
+      lastTokenUnlockNotificationDate: audience.lastTokenUnlockNotificationDate(chatId),
     }));
     writeJsonAtomically(filePath, data);
   };
@@ -409,7 +467,19 @@ export function createPersistentTelegramAudience(
       persistDeliveryHistory();
     },
     deliveredCandidateIds: (chatId) => audience.deliveredCandidateIds(chatId),
+    tokenUnlockTracking: (chatId) => audience.tokenUnlockTracking(chatId),
+    setTokenUnlockTracking(chatId, enabled) {
+      audience.setTokenUnlockTracking(chatId, enabled);
+      persistAudience();
+    },
+    tokenUnlockTrackingChatIds: () => audience.tokenUnlockTrackingChatIds(),
+    lastTokenUnlockNotificationDate: (chatId) => audience.lastTokenUnlockNotificationDate(chatId),
+    markTokenUnlockNotificationSent(chatId, date) {
+      audience.markTokenUnlockNotificationSent(chatId, date);
+      persistAudience();
+    },
     chatIds: () => audience.chatIds(),
+    allChatIds: () => audience.allChatIds(),
   };
 }
 

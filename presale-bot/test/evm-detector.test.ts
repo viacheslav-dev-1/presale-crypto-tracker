@@ -23,6 +23,44 @@ const config: EvmChainConfig = {
 };
 
 describe("generic EVM DEX detector", () => {
+  it("ignores pool events while no chat is subscribed to discovery", async () => {
+    let watcher: Parameters<EvmDetectorClient["watchContractEvent"]>[0] | undefined;
+    const client: EvmDetectorClient = {
+      getChainId: vi.fn(async () => 4663),
+      watchContractEvent: vi.fn((parameters) => {
+        watcher = parameters;
+        return vi.fn();
+      }),
+      readContract: vi.fn(async () => undefined),
+    };
+    const eventBus = createEventBus();
+    const received = vi.fn();
+    eventBus.on("PoolCreated", received);
+    const detector = new EvmDexDetector({
+      config: { ...config, dexFactories: [config.dexFactories[0]!] },
+      client,
+      eventBus,
+      logger: pino({ level: "silent" }),
+      isDiscoveryEnabled: () => false,
+    });
+
+    await detector.start();
+    watcher?.onLogs([{
+      args: {
+        token0: quote,
+        token1: "0x1111111111111111111111111111111111111111",
+        pair: "0x2222222222222222222222222222222222222222",
+      },
+      transactionHash: `0x${"e".repeat(64)}`,
+      logIndex: 1,
+    }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(client.readContract).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+    await detector.stop();
+  });
+
   it("normalizes a PancakeSwap BSC pair with BNB-denominated valuation", async () => {
     const bscQuote = "0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" as const;
     const bscConfig: EvmChainConfig = {

@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     creatorHistory,
     () => audience.chatIds().some((chatId) => audience.showCreatorHistory(chatId)),
   );
+  const isDiscoveryEnabled = () => audience.chatIds().length > 0;
   const candidateView = (candidate: Parameters<typeof withTokenRisk>[0], chatId: number) => {
     if (audience.showCreatorHistory(chatId) || !candidate.creatorHistory) return candidate;
     const { creatorHistory: _history, riskScore: _score, riskAssessment: _assessment, ...withoutHistory } = candidate;
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
         logger,
         ...(config.solana.heliusApiKey ? { heliusApiKey: config.solana.heliusApiKey } : {}),
         solUsdPrice: createSolUsdPriceService(),
+        isDiscoveryEnabled,
       })
     : undefined;
   const bscDetector = config.bsc
@@ -71,6 +73,7 @@ async function main(): Promise<void> {
         eventBus,
         logger,
         nativeUsdPrice: createBnbUsdPriceService(),
+        isDiscoveryEnabled,
       })
     : undefined;
   const baseDetector = config.base
@@ -80,6 +83,7 @@ async function main(): Promise<void> {
         eventBus,
         logger,
         nativeUsdPrice: createEthUsdPriceService(),
+        isDiscoveryEnabled,
       })
     : undefined;
   const robinhoodDetector = new EvmDexDetector({
@@ -88,6 +92,7 @@ async function main(): Promise<void> {
     eventBus,
     logger,
     nativeUsdPrice: createEthUsdPriceService(),
+    isDiscoveryEnabled,
   });
   const healthService = {
     async check() {

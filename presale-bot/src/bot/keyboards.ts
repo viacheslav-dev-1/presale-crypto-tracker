@@ -49,8 +49,45 @@ export function mainMenuKeyboard(options: {
     .row()
     .text("ℹ️ Help", "menu:help")
     .row()
-    .text("⛓ Chains", "menu:chains");
+    .text("⛓ Chains", "menu:chains")
+    .row()
+    .text("🧰 Other features", "menu:other_features");
   return keyboard;
+}
+
+export function otherFeaturesKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🔓 Binance Alpha Token Unlocks", "unlocks:menu")
+    .row()
+    .text("⬅️ Main menu", "menu:home");
+}
+
+function monthName(now: Date, offset: 0 | 1): string {
+  return new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" })
+    .format(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1)));
+}
+
+export function tokenUnlocksKeyboard(tracking: boolean): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🏆 Top 10 Token Unlocks", "unlocks:month:0")
+    .row()
+    .text(`🔔 Token Unlocks Tracking${tracking ? " ✅" : ""}`, "unlocks:tracking:on")
+    .row()
+    .text("🔕 Turn Off Token Unlocks Tracking", "unlocks:tracking:off")
+    .row()
+    .text("⬅️ Main menu", "menu:home");
+}
+
+export function tokenUnlockMonthKeyboard(now: Date, selected: 0 | 1, tracking: boolean): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(`Current: ${monthName(now, 0)}${selected === 0 ? " ✅" : ""}`, "unlocks:month:0")
+    .text(`Next: ${monthName(now, 1)}${selected === 1 ? " ✅" : ""}`, "unlocks:month:1")
+    .row()
+    .text("⬅️ Token Unlocks menu", "unlocks:menu")
+    .row()
+    .text(tracking ? "🔔 Tracking ON" : "🔕 Tracking OFF", tracking ? "unlocks:tracking:off" : "unlocks:tracking:on")
+    .row()
+    .text("🏠 Main menu", "menu:home");
 }
 
 export function marketCapKeyboard(trackWithoutMarketCap: boolean): InlineKeyboard {

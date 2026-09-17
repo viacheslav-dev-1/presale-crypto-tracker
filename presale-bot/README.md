@@ -88,6 +88,16 @@ addresses; otherwise addresses remain the fallback. These provider labels are
 not Fomo-specific usernames such as `MomoOnChain` unless the provider independently
 knows that identity.
 
+The main menu's **Other features** section includes Binance Alpha token unlocks.
+Binance's public Alpha token list is used to restrict results to active Binance
+Alpha assets, while CoinMarketCap's public unlock feed supplies the nearest
+unlock dates and amounts. No provider key is required with the default
+`TOKEN_UNLOCK_PROVIDER=coinmarketcap`. Paid CryptoRank access remains available
+by setting `TOKEN_UNLOCK_PROVIDER=cryptorank` and `CRYPTORANK_API_KEY`. Users
+can browse the current or next UTC month and enable a persistent day-before
+notification. Enabling unlock tracking automatically disables that chat's normal
+discovery alerts, while preserving its discovery settings for later use.
+
 Robinhood Chain discovery uses the shared EVM DEX adapter and listens to the
 official Uniswap V2 `PairCreated`, V3 `PoolCreated`, and V4 `Initialize` events on mainnet
 (chain ID `4663`). Configure `ROBINHOOD_RPC_HTTP` or, preferably, an Alchemy-style

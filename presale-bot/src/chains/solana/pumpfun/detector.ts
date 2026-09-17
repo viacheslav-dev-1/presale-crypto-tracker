@@ -49,6 +49,7 @@ export class PumpFunDetector implements ChainDetector {
       logger: Logger;
       heliusApiKey?: string;
       solUsdPrice?: SolUsdPriceService;
+      isDiscoveryEnabled?: () => boolean;
     },
   ) {}
 
@@ -90,6 +91,7 @@ export class PumpFunDetector implements ChainDetector {
   }
 
   async processLogs(logs: Logs, slot: number, observedAt = new Date()): Promise<void> {
+    if (this.dependencies.isDiscoveryEnabled?.() === false) return;
     if (logs.err || this.completedSignatures.has(logs.signature) || this.inFlightSignatures.has(logs.signature)) return;
     this.inFlightSignatures.add(logs.signature);
     try {
@@ -102,6 +104,7 @@ export class PumpFunDetector implements ChainDetector {
         if (!marketData) return;
         const candidate = this.mergeMarketData(tracked.candidate, marketData);
         this.rememberCandidate(tradeFromLog.mint, { ...tracked, candidate });
+        if (this.dependencies.isDiscoveryEnabled?.() === false) return;
         await this.dependencies.eventBus.emit({ type: "TokenMarketCapUpdated", candidate });
         this.lastEventAt = observedAt;
         this.rememberCompleted(logs.signature);
@@ -122,6 +125,7 @@ export class PumpFunDetector implements ChainDetector {
       const candidateWithMarketData = marketData ? this.mergeMarketData(normalized, marketData) : normalized;
       const candidateWithMintRisk = await this.withMintRiskData(candidateWithMarketData);
       const candidate = await this.withHolders(candidateWithMintRisk, creation.tokenTotalSupply);
+      if (this.dependencies.isDiscoveryEnabled?.() === false) return;
       if (candidate.marketCapUsd === undefined) {
         this.dependencies.logger.warn(
           { mint: creation.mint, variant: creation.variant },

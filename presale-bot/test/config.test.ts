@@ -15,6 +15,7 @@ describe("loadConfig", () => {
     expect(config.creatorHistoryFile).toBe(".data/creator-history.json");
     expect(config.telegramDeliveryHistoryFile).toBe(".data/telegram-delivery-history.json");
     expect(config.creatorMeaningfulLiquidityUsd).toBe(25_000);
+    expect(config.tokenUnlockProvider).toBe("coinmarketcap");
     expect(config.defaultMinimumMarketCapUsd).toBe(0);
     expect(config.defaultMaximumMarketCapUsd).toBe(10_000);
     expect([...config.telegramAdminIds]).toEqual([123, 456]);
@@ -102,6 +103,11 @@ describe("loadConfig", () => {
   it("loads an optional Helius key for indexed Solana holder data", () => {
     const config = loadConfig({ ...validEnvironment, HELIUS_API_KEY: "helius-test-key" });
     expect(config.solana.heliusApiKey).toBe("helius-test-key");
+  });
+
+  it("loads an optional CryptoRank key for token unlock data", () => {
+    const config = loadConfig({ ...validEnvironment, CRYPTORANK_API_KEY: "cryptorank-test-key" });
+    expect(config.cryptoRankApiKey).toBe("cryptorank-test-key");
   });
 
   it("rejects malformed administrator IDs", () => {
